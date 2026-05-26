@@ -589,12 +589,16 @@ struct CustomSlotEditSheet: View {
 
 // MARK: - Custom Page Grid View
 
+struct EditSlotItem: Identifiable {
+    let index: Int
+    var id: Int { index }
+}
+
 struct CustomGridView: View {
     @ObservedObject var engine: SoundboardAudioEngine
     @Binding var slots: [CustomSlotConfig]
     
-    @State private var editingSlot: Int? = nil
-    @State private var showingEditSheet = false
+    @State private var activeEditItem: EditSlotItem? = nil
     
     let columns = [
         GridItem(.flexible(), spacing: 12),
@@ -622,8 +626,7 @@ struct CustomGridView: View {
                             themeColor: .orange,
                             engine: engine,
                             onClickAdd: {
-                                editingSlot = index
-                                showingEditSheet = true
+                                activeEditItem = EditSlotItem(index: index)
                             }
                         )
                         .contextMenu {
@@ -636,8 +639,7 @@ struct CustomGridView: View {
                                 }
                                 
                                 Button("Edit / Replace...") {
-                                    editingSlot = index
-                                    showingEditSheet = true
+                                    activeEditItem = EditSlotItem(index: index)
                                 }
                                 
                                 Button("Rename...") {
@@ -651,8 +653,7 @@ struct CustomGridView: View {
                                 }
                             } else {
                                 Button("Assign Sound...") {
-                                    editingSlot = index
-                                    showingEditSheet = true
+                                    activeEditItem = EditSlotItem(index: index)
                                 }
                             }
                             
@@ -670,21 +671,22 @@ struct CustomGridView: View {
             }
         }
         .padding(.top)
-        .sheet(isPresented: $showingEditSheet) {
-            if let slotIdx = editingSlot {
-                CustomSlotEditSheet(
-                    isPresented: $showingEditSheet,
-                    slotId: slotIdx,
-                    currentConfig: slots[slotIdx],
-                    onSave: { newConfig in
-                        slots[slotIdx] = newConfig
-                        saveCustomConfigs()
-                        
-                        // Sync loop state to engine
-                        engine.setLooping(id: "custom_\(slotIdx)", looping: newConfig.isLooping)
-                    }
-                )
-            }
+        .sheet(item: $activeEditItem) { item in
+            CustomSlotEditSheet(
+                isPresented: Binding(
+                    get: { activeEditItem != nil },
+                    set: { if !$0 { activeEditItem = nil } }
+                ),
+                slotId: item.index,
+                currentConfig: slots[item.index],
+                onSave: { newConfig in
+                    slots[item.index] = newConfig
+                    saveCustomConfigs()
+
+                    // Sync loop state to engine
+                    engine.setLooping(id: "custom_\(item.index)", looping: newConfig.isLooping)
+                }
+            )
         }
     }
     
@@ -900,7 +902,109 @@ extension Color {
 
 // MARK: - App Delegate & Main Definition
 
+func resolveFilePath(_ path: String) -> URL? {
+    let fileManager = FileManager.default
+
+    // 1. Check parent directory of the bundle (ideal for double-clicking app next to images folder)
+    let parentDirUrl = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(path)
+    if fileManager.fileExists(atPath: parentDirUrl.path) {
+        return parentDirUrl
+    }
+
+    // 2. Check current working directory
+    let cwdUrl = URL(fileURLWithPath: fileManager.currentDirectoryPath).appendingPathComponent(path)
+    if fileManager.fileExists(atPath: cwdUrl.path) {
+        return cwdUrl
+    }
+
+    // 3. Check relative to executable directory
+    if let execUrl = Bundle.main.executableURL {
+        let execDirUrl = execUrl.deletingLastPathComponent().appendingPathComponent(path)
+        if fileManager.fileExists(atPath: execDirUrl.path) {
+            return execDirUrl
+        }
+    }
+
+    // 4. Check inside bundle resources
+    if let resourceUrl = Bundle.main.url(forResource: path, withExtension: nil) {
+        return resourceUrl
+    }
+
+    return nil
+}
+
+@MainActor
+func setDockIcon() {
+    // 1. Attempt to load our custom-designed high-fidelity dragon app icon PNG
+    if let iconUrl = resolveFilePath("images/dragon_app_icon.png"),
+       let customImage = NSImage(contentsOf: iconUrl) {
+        NSApplication.shared.applicationIconImage = customImage
+        return
+    }
+
+    // 2. Fallback: Draw the glassmorphic icon with the flame/dragon SF Symbol dynamically
+    let iconSize = CGSize(width: 512, height: 512)
+
+    // Safety check for the 'dragon.fill' SF Symbol (introduced in macOS 14.0)
+    let hasDragonSymbol = NSImage(systemSymbolName: "dragon.fill", accessibilityDescription: nil) != nil
+    let symbolToUse = hasDragonSymbol ? "dragon.fill" : "flame.fill"
+
+    // Define the SwiftUI view for our high-fidelity, premium app icon
+    let iconView = ZStack {
+        // Deep obsidian / metallic dark purple background card
+        RoundedRectangle(cornerRadius: 110, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.14, green: 0.07, blue: 0.22),
+                        Color(red: 0.04, green: 0.02, blue: 0.08)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            // Sleek outer golden glowing border
+            .overlay(
+                RoundedRectangle(cornerRadius: 110, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [.yellow.opacity(0.6), .orange.opacity(0.2), .clear],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 6
+                    )
+            )
+            .shadow(color: .black.opacity(0.6), radius: 15, x: 0, y: 10)
+
+        // Inner glowing golden dragon/flame icon
+        Image(systemName: symbolToUse)
+            .font(.system(size: 260, weight: .bold))
+            .foregroundStyle(
+                LinearGradient(
+                    colors: [.yellow, .orange, Color(red: 1.0, green: 0.35, blue: 0.0)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .shadow(color: .orange.opacity(0.6), radius: 25, x: 0, y: 5)
+    }
+    .frame(width: iconSize.width, height: iconSize.height)
+
+    // Render the view to a high-res NSImage using ImageRenderer
+    let renderer = ImageRenderer(content: iconView)
+    renderer.scale = 1.0
+
+    if let nsImage = renderer.nsImage {
+        NSApplication.shared.applicationIconImage = nsImage
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setDockIcon()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
     }
@@ -909,7 +1013,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct SoundboardApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    
+
     var body: some Scene {
         WindowGroup {
             MainView()
